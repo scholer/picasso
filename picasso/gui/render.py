@@ -849,7 +849,7 @@ class View(QtGui.QLabel):
         y_movie = y_rel * self.viewport_height() + self.viewport[0][0]
         return x_movie, y_movie
 
-    def map_to_view(self, x, y):
+    def map_to_view(self, x, y, z=None):
         ''' Converts coordinates from camera units to display units. '''
         cx = self.width() * (x - self.viewport[0][1]) / self.viewport_width()
         cy = self.height() * (y - self.viewport[0][0]) / self.viewport_height()
@@ -980,12 +980,20 @@ class View(QtGui.QLabel):
             index_blocks = self.get_index_blocks(channel)
             n_locs = []
             rmsd = []
+            has_z = hasattr(locs, 'z')
+            if has_z:
+                rmsd_z = []
+                z_similar = np.empty(len(self._picks))
             for i, pick in enumerate(self._picks):
-                x, y = pick
+                x = pick[0]
+                y = pick[1]
                 block_locs = postprocess.get_block_locs_at(x, y, index_blocks)
                 pick_locs = lib.locs_at(x, y, block_locs, r)
                 n_locs.append(len(pick_locs))
                 rmsd.append(self.rmsd_at_com(pick_locs))
+                if has_z:
+                    rmsd_z.append(np.std(pick_locs.z))
+                    z_similar[i] = np.mean(pick_locs.z)
             mean_n_locs = np.mean(n_locs)
             mean_rmsd = np.mean(rmsd)
             std_n_locs = np.std(n_locs)
@@ -997,45 +1005,89 @@ class View(QtGui.QLabel):
             # x, y coordinates of found similar regions:
             x_similar = np.array([_[0] for _ in self._picks])
             y_similar = np.array([_[1] for _ in self._picks])
-            # preparations for hex grid search
-            x_range = np.arange(d / 2, info[0]['Width'], np.sqrt(3) * d / 2)
-            y_range_base = np.arange(d / 2, info[0]['Height'] - d / 2, d)
-            y_range_shift = y_range_base + d / 2
+            # preparations for grid search
+            x_range = np.arange(0, info[0]['Width'] + d / 2, d / 2)
+            y_range = np.arange(0, info[0]['Height'] + d / 2, d / 2)
+            if has_z:
+                mean_rmsd_z = np.mean(rmsd_z)
+                self._pick_similar_z_radius = 2*mean_rmsd_z
+                std_rmsd_z = np.std(rmsd_z)
+                min_rmsd_z = mean_rmsd_z - std_range * std_rmsd_z
+                max_rmsd_z = mean_rmsd_z + std_range * std_rmsd_z
+                mean_z = np.mean(locs.z)
+                std_z = np.std(locs.z)
+                min_z = mean_z - 2*std_z
+                max_z = mean_z + 2*std_z + self._pick_similar_z_radius
+                z_range = np.arange(min_z, max_z, self._pick_similar_z_radius)
+                r2 = r**2
+                rz2 = self._pick_similar_z_radius**2
+                dz2 = 4*rz2
             d2 = d**2
             nx = len(x_range)
             locs, size, x_index, y_index, block_starts, block_ends, K, L = index_blocks
             progress = lib.ProgressDialog('Pick similar', 0, nx, self)
             progress.set_value(0)
             for i, x_grid in enumerate(x_range):
-                # y_grid is shifted for odd columns
-                if i % 2:
-                    y_range = y_range_shift
-                else:
-                    y_range = y_range_base
                 for y_grid in y_range:
                     n_block_locs = postprocess.n_block_locs_at(x_grid, y_grid, size, K, L, block_starts, block_ends)
-                    if n_block_locs > min_n_locs:
+                    if n_block_locs > 1:
                         block_locs = postprocess.get_block_locs_at(x_grid, y_grid, index_blocks)
                         picked_locs = lib.locs_at(x_grid, y_grid, block_locs, r)
                         if len(picked_locs) > 1:
-                            # Move to COM peak
-                            x_test_old = x_grid
-                            y_test_old = y_grid
-                            x_test = picked_locs.x.mean()
-                            y_test = picked_locs.y.mean()
-                            while np.abs(x_test - x_test_old) > 1e-3 or np.abs(y_test - y_test_old) > 1e-3:
-                                x_test_old = x_test
-                                y_test_old = y_test
-                                picked_locs = lib.locs_at(x_test, y_test, block_locs, r)
+                            if has_z:
+                                for z_grid in z_range:
+                                    # pick only the locs that are in the ellipsoid
+                                    picked = (((picked_locs.x - x_grid)**2 + (picked_locs.y - y_grid)**2)/r2 + (picked_locs.z - z_grid)**2/rz2) < 1
+                                    picked_locs_z = picked_locs[picked]
+                                    if len(picked_locs_z) > 1:
+                                        # Move COM
+                                        x_test_old = x_grid
+                                        y_test_old = y_grid
+                                        z_test_old = z_grid
+                                        x_test = picked_locs_z.x.mean()
+                                        y_test = picked_locs_z.y.mean()
+                                        z_test = picked_locs_z.z.mean()
+                                        while np.abs(x_test - x_test_old) > 1e-3 or np.abs(y_test - y_test_old) > 1e-3 or np.abs(z_test - z_test_old) > 1e-3:
+                                            x_test_old = x_test
+                                            y_test_old = y_test
+                                            z_test_old = z_test
+                                            picked_locs = lib.locs_at(x_test, y_test, block_locs, r)
+                                            picked = (((picked_locs.x - x_test)**2 + (picked_locs.y - y_test)**2)/r2 + (picked_locs.z - z_test)**2/rz2) < 1
+                                            picked_locs_z = picked_locs[picked]
+                                            x_test = picked_locs_z.x.mean()
+                                            y_test = picked_locs_z.y.mean()
+                                            z_test = picked_locs_z.z.mean()
+                                        # Check if there is an overlap with another already picked region
+                                        if min_n_locs < len(picked_locs_z) < max_n_locs:
+                                            if min_rmsd < self.rmsd_at_com(picked_locs_z) < max_rmsd:
+                                                if min_rmsd_z < np.std(picked_locs_z.z) < max_rmsd_z:
+                                                    if np.all(((x_similar - x_test)**2 + (y_similar - y_test)**2)/d2 + (z_similar - z_test)**2/dz2 > 1):
+                                                        x_similar = np.append(x_similar, x_test)
+                                                        y_similar = np.append(y_similar, y_test)
+                                                        z_similar = np.append(z_similar, z_test)
+                            else:
+                                # Move to COM peak
+                                x_test_old = x_grid
+                                y_test_old = y_grid
                                 x_test = picked_locs.x.mean()
                                 y_test = picked_locs.y.mean()
-                            if np.all((x_similar - x_test)**2 + (y_similar - y_test)**2 > d2):
+                                while np.abs(x_test - x_test_old) > 1e-3 or np.abs(y_test - y_test_old) > 1e-3:
+                                    x_test_old = x_test
+                                    y_test_old = y_test
+                                    picked_locs = lib.locs_at(x_test, y_test, block_locs, r)
+                                    x_test = picked_locs.x.mean()
+                                    y_test = picked_locs.y.mean()
+                                # Check for overlaps with other already picked regions
                                 if min_n_locs < len(picked_locs) < max_n_locs:
-                                    if min_rmsd < self.rmsd_at_com(picked_locs) < max_rmsd:
-                                        x_similar = np.append(x_similar, x_test)
-                                        y_similar = np.append(y_similar, y_test)
+                                    if np.all((x_similar - x_test)**2 + (y_similar - y_test)**2 > d2):
+                                        if min_rmsd < self.rmsd_at_com(picked_locs) < max_rmsd:
+                                            x_similar = np.append(x_similar, x_test)
+                                            y_similar = np.append(y_similar, y_test)
                 progress.set_value(i + 1)
-            similar = list(zip(x_similar, y_similar))
+            if has_z:
+                similar = list(zip(x_similar, y_similar, z_similar))
+            else:
+                similar = list(zip(x_similar, y_similar))
             self._picks = []
             self.add_picks(similar)
 
@@ -1049,7 +1101,8 @@ class View(QtGui.QLabel):
             progress = lib.ProgressDialog('Creating localization list', 0, len(self._picks), self)
             progress.set_value(0)
             for i, pick in enumerate(self._picks):
-                x, y = pick
+                x = pick[0]
+                y = pick[1]
                 block_locs = postprocess.get_block_locs_at(x, y, index_blocks)
                 group_locs = lib.locs_at(x, y, block_locs, r)
                 if add_group:
@@ -1063,10 +1116,10 @@ class View(QtGui.QLabel):
         x, y = position
         pick_diameter_2 = self.window.tools_settings_dialog.pick_diameter.value()**2
         new_picks = []
-        for x_, y_ in self._picks:
-            d2 = (x - x_)**2 + (y - y_)**2
+        for pick in self._picks:
+            d2 = (x - pick[0])**2 + (y - pick[1])**2
             if d2 > pick_diameter_2:
-                new_picks.append((x_, y_))
+                new_picks.append(pick)
         self._picks = []
         self.add_picks(new_picks)
 
