@@ -1109,8 +1109,9 @@ class View(QtGui.QLabel):
                     group = i * np.ones(len(group_locs), dtype=np.int32)
                     group_locs = lib.append_to_rec(group_locs, group, 'group')
                 # now consider z coordinate and limit the localizations to coordinates within the ellipsoid
-                z = pick[2]
-                # use self._pick_similar_z_radius
+                if hasattr(self, '_pick_similar_z_radius'):
+                    z = pick[2]
+                    # use self._pick_similar_z_radius
                 picked_locs.append(group_locs)
                 progress.set_value(i + 1)
             return picked_locs
