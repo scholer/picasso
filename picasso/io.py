@@ -51,6 +51,7 @@ def load_raw(path, prompt_info=None):
     shape = (info[0]['Frames'], info[0]['Height'], info[0]['Width'])
     movie = _np.memmap(path, dtype, 'r', shape=shape)
     if info[0]['Byte Order'] != '<':
+
         movie = movie.byteswap()
         info[0]['Byte Order'] = '<'
     return movie, info
@@ -305,14 +306,20 @@ class TiffMultiMap:
     def __init__(self, path, memmap_frames=False, verbose=False):
         self.path = _ospath.abspath(path)
         self.dir = _ospath.dirname(self.path)
-        base, ext = _ospath.splitext(_ospath.splitext(self.path)[0])    # split two extensions as in .ome.tif
-        base = _re.escape(base)
-        pattern = _re.compile(base + '_(\d*).ome.tif')    # This matches the basename + an appendix of the file number
-        entries = [_.path for _ in _os.scandir(self.dir) if _.is_file()]
-        matches = [_re.match(pattern, _) for _ in entries]
-        matches = [_ for _ in matches if _ is not None]
-        paths_indices = [(int(_.group(1)), _.group(0)) for _ in matches]
+        if path.endswith('.ome.tif'):
+            base, ext = path.rstrip('.ome.tif'), '.ome.tif'
+        else:
+            base, ext = _ospath.splitext(self.path)
+        pattern = _re.compile(_re.escape(base) + '_(\d*)' + _re.escape(ext))  # Matches basename + file number + ext
+        print("Micrographs search pattern:", pattern)
+        entries = [f.path for f in _os.scandir(self.dir) if f.is_file()]
+        matches = [_re.match(pattern, fn) for fn in entries]
+        matches = [match for match in matches if match is not None]
+        paths_indices = [(int(match.group(1)), match.group(0)) for match in matches]  # (number, filename)
+        print("paths_indices:", paths_indices)
         self.paths = [self.path] + [path for index, path in sorted(paths_indices)]
+        # TODO: When opening many files, use a generator to avoid "too many open files" error.
+        # TODO: This is probably best done with a new class, since the changes are substantial.
         self.maps = [TiffMap(path, verbose=verbose) for path in self.paths]
         self.n_maps = len(self.maps)
         self.n_frames_per_map = [_.n_frames for _ in self.maps]

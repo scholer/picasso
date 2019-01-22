@@ -1243,31 +1243,39 @@ class FitWorker(QtCore.QThread):
     def run(self):
         N = len(self.identifications)
         t0 = time.time()
+        print("Gathering spots, localize.get_spots() ...")
         spots = localize.get_spots(self.movie, self.identifications, self.box, self.camera_info)
         if self.method == 'lq':
             if self.use_gpufit:
                 self.progressMade.emit(1, 1)
+                print("Making theta fit from spots (LQ, GPU) ...")
                 theta = gausslq.fit_spots_gpufit(spots)
                 em = self.camera_info['gain'] > 1
+                print("Making locs from theta fits (LQ, GPU) ...")
                 locs = gausslq.locs_from_fits_gpufit(self.identifications, theta, self.box, em)
             else:
+                print("Making futures from spots (LQ, parallel CPU) ...")
                 fs = gausslq.fit_spots_parallel(spots, async=True)
                 n_tasks = len(fs)
                 while lib.n_futures_done(fs) < n_tasks:
                     self.progressMade.emit(round(N * lib.n_futures_done(fs) / n_tasks), N)
                     time.sleep(0.2)
+                print("Making theta fits from futures (LQ, parallel CPU) ...")
                 theta = gausslq.fits_from_futures(fs)
                 em = self.camera_info['gain'] > 1
+                print("Making locs from theta fits (LQ, parallel CPU) ...")
                 locs = gausslq.locs_from_fits(self.identifications, theta, self.box, em)
         elif self.method == 'mle':
+            print("Starting async gauss MLE fitting...")
             current, thetas, CRLBs, likelihoods, iterations = gaussmle.gaussmle_async(spots, self.eps, self.max_it, method='sigmaxy')
             while current[0] < N:
                 self.progressMade.emit(current[0], N)
                 time.sleep(0.2)
+            print("Gathering locs from gauss MLE fits...")
             locs = gaussmle.locs_from_fits(self.identifications, thetas, CRLBs, likelihoods, iterations, self.box)
         elif self.method == 'avg':
             print('Average intensity')
-            #just get out the average intensity
+            # just get out the average intensity
             fs = avgroi.fit_spots_parallel(spots, async=True)
             n_tasks = len(fs)
             while lib.n_futures_done(fs) < n_tasks:
@@ -1277,7 +1285,7 @@ class FitWorker(QtCore.QThread):
             em = self.camera_info['gain'] > 1
             locs = avgroi.locs_from_fits(self.identifications, theta, self.box, em)
         else:
-            print('This should never happen...')
+            print('Unrecognized fitting method %s. - This should never happen...' % (self.method,))
         self.progressMade.emit(N+1, N)
         dt = time.time() - t0
         self.finished.emit(locs, dt, self.fit_z, self.calibrate_z)

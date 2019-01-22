@@ -8,9 +8,9 @@ from . import postprocess as _postprocess
 
 try:
     from pygpufit import gpufit as gf
-    print('Pygufit detected. GPU fitting enabled.')
+    print('Pygpufit detected. GPU fitting enabled.')
 except ImportError:
-    print('No Pygufit detected. GPU fitting disabled.')
+    print('No Pygpufit detected. GPU fitting disabled.')
 
 
 @_numba.jit(nopython=True, nogil=True)

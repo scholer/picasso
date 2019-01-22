@@ -1956,7 +1956,7 @@ class View(QtGui.QLabel):
                 font.setPixelSize(20)
                 painter.setFont(font)
                 distance = float(int(np.sqrt(((oldpoint[0]-point[0])**2+(oldpoint[1]-point[1])**2))*pixelsize*100))/100
-                painter.drawText((cx+ox)/2+d,(cy+oy)/2+d, str(distance)+ ' nm')
+                painter.drawText((cx+ox)/2+d,(cy+oy)/2+d, str(distance)+' nm')
             oldpoint = point
         painter.end()
         return image
@@ -1981,9 +1981,9 @@ class View(QtGui.QLabel):
                 painter.setFont(font)
                 painter.setPen(QtGui.QColor('white'))
                 text_spacer = 40
-                text_width = length_displaypxl +2*text_spacer
+                text_width = length_displaypxl + 2*text_spacer
                 text_height = text_spacer
-                painter.drawText(x-text_spacer, y-25, text_width, text_height, QtCore.Qt.AlignHCenter,str(scalebar)+' nm')
+                painter.drawText(x-text_spacer, y-25, text_width, text_height, QtCore.Qt.AlignHCenter, "{:0.0f}nm".format(scalebar))
         return image
 
     def draw_minimap(self, image):
@@ -3634,7 +3634,7 @@ class View(QtGui.QLabel):
         n_channels = len(self.locs)
         if n_channels:
             viewport = viewport or self.viewport
-            self.draw_scene(viewport, autoscale=autoscale, use_cache=use_cache, picks_only=picks_only,points_only=points_only)
+            self.draw_scene(viewport, autoscale=autoscale, use_cache=use_cache, picks_only=picks_only, points_only=points_only)
             self.update_cursor()
 
     def viewport_center(self, viewport=None):
