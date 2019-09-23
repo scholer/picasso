@@ -22,7 +22,7 @@ setup(
         'matplotlib',
         'pyyaml',
         'lmfit',
-        'pyqt=4.11',
+        #'pyqt',
         'numpy',
         'scipy',
         'scikit-learn',

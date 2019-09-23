@@ -310,14 +310,15 @@ class TiffMultiMap:
             base, ext = path.rstrip('.ome.tif'), '.ome.tif'
         else:
             base, ext = _ospath.splitext(self.path)
-        pattern = _re.compile(_re.escape(base) + '_(\d*)' + _re.escape(ext))  # Matches basename + file number + ext
+        pattern = _re.compile(_re.escape(base) + r'_(\d*)' + _re.escape(ext))  # Matches basename + file number + ext
         print("Micrographs search pattern:", pattern)
         entries = [f.path for f in _os.scandir(self.dir) if f.is_file()]
         matches = [_re.match(pattern, fn) for fn in entries]
         matches = [match for match in matches if match is not None]
         paths_indices = [(int(match.group(1)), match.group(0)) for match in matches]  # (number, filename)
+        paths_indices = sorted(paths_indices)  # Let's sort before we print, so we can see the order
         print("paths_indices:", paths_indices)
-        self.paths = [self.path] + [path for index, path in sorted(paths_indices)]
+        self.paths = [self.path] + [path for index, path in paths_indices]
         # TODO: When opening many files, use a generator to avoid "too many open files" error.
         # TODO: This is probably best done with a new class, since the changes are substantial.
         self.maps = [TiffMap(path, verbose=verbose) for path in self.paths]
