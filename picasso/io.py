@@ -156,41 +156,159 @@ def save_user_settings(settings):
 
 class TiffMap:
 
-    TIFF_TYPES = {1: "B", 2: "c", 3: "H", 4: "L", 5: "RATIONAL"}
+    TIFF_TYPES = {
+        # 0 is invalid TIFF data type
+        1: "B",  # byte, 8-bit unsigned integer
+        2: "c",  # ascii character, 8-bit bytes w/ last byte null
+        3: "H",  # 16-bit unsigned integer
+        4: "L",  # 32-bit unsigned integer
+        5: "RATIONAL",  # 64-bit unsigned fraction
+        # 6 is !8-bit signed integer
+        16: "Q",  # BigTIFF 64-bit unsigned integer
+        17: "q",  # BigTIFF 64-bit signed integer
+        18: "Q",  # BigTIFF 64-bit unsigned integer (offset)
+    }
     TYPE_SIZES = {
-        "c": 1,
-        "B": 1,
-        "h": 2,
-        "H": 2,
-        "i": 4,
-        "I": 4,
-        "L": 4,
+        "c": 1,  # char, string of length 1.
+        "B": 1,  # unsigned char, maps to python int.
+        "h": 2,  # short, 16-bit signed int from 0-65535
+        "H": 2,  # unsigned short, 16-bit signed int,
+        "i": 4,  # 32-bit int, signed.
+        "I": 4,  # 32-bit int, unsigned.
+        "L": 4,  # Same as "I", 32-bit unsigned int. Unsigned long int.
+        "Q": 8,  # 64-bit int, unsigned. Aka "unsigned long long int"
         "RATIONAL": 8,
     }
+    UNSIGNED_BYTESIZE_TO_TYPE = {1: "B", 2: "H", 4: "L", 8: "Q"}
+    TIFF_VERSIONS = {42: 1, 43: 2}  # 42/1 is standard TIFF, 43/2 is BigTIFF.
 
     def __init__(self, path, verbose=False):
         if verbose:
             print("Reading info from {}".format(path))
         self.path = _ospath.abspath(path)
         self.file = open(self.path, "rb")
+        self.verbose = verbose
+        # Standard TIFF specification:
+        # Byte 0-1: Byte order - b"II"/0x4D4D/77 is little, b"MM"/0x4949/73 is big.
         self._tif_byte_order = {b"II": "<", b"MM": ">"}[self.file.read(2)]
-        self.file.seek(4)
-        self.first_ifd_offset = self.read("L")
+        # Byte 2-3: TIFF version - 42=0x002A=b"\x00*" is standard TIFF, 43=0x002B=b"\x00+" is BigTIFF.
+        # If using little endian,  then 42 is written b"*\x00"/0x2A00, and BigTIFF 0x002B=b"+\x00".
+        self._tiff_version_tag = self.read('H', 1)  # Read a single 2-byte/16-bit unsigned short from current position.
+        self._tiff_version_num = self.TIFF_VERSIONS[self._tiff_version_tag]
+        self._first_ifd_offset_type = {42: "L", 43: "Q"}[self._tiff_version_tag]
+        self._total_ifd_count_bytetype = {42: "H", 43: "Q"}[self._tiff_version_tag]
+        self._tiff_version_str = {42: "standard TIFF", 43: "BigTIFF"}[self._tiff_version_tag]
+        # In standard tiff, each IFD tag-entry is 12 bytes; in BigTIFF they are 20 bytes:
+        self._idf_nbytes_per_entry = {42: 12, 43: 20}[self._tiff_version_tag]
+        if self._tiff_version_tag == 42:  # 42 means "Standard TIFF"
+            # Standard TIFF uses 16-bit int for the number of IFDs:
+            self._offset_for_first_ifd_offset = 4
+            self._total_ifd_count_bytetype = "H"
+            self._total_ifd_count_bytesize = 2
+            self._idf_entry_tag_bytetype = "H"  # 16-bit
+            self._idf_entry_datatype_bytetype = "H"  # 16-bit
+            self._idf_entry_element_count_bytetype = "L"  # 32-bit, the length of this tag's data.
+            self._idf_entry_tagdata_or_offset_bytetype = "L"  # 32-bit for standard TIFF
+            self._idf_entry_tagdata_bytesize_before_offset = 4  # More than 4 bytes => use offset
+            self._idf_nbytes_per_entry = 12  # Each IFD tag-entry is described by 12 bytes
+            # Standard TIFF always uses 32-bit offset sizes:
+            assert self.file.tell() == 4
+            self._ifd_offsets_bytesize = 4
+            self._ifd_offsets_bytetype = "L"
+            # Find offset for first IFD:
+            self.first_ifd_offset = self.read("L")  # Standard TIFF uses 32-bit int to specify first ifd offset.
 
-        # Read info from first IFD
+        elif self._tiff_version_tag == 43:  # 43 means "BigTIFF"
+            # BigTIFF uses 64-bit int for the number of IFDs:
+            self._offset_for_first_ifd_offset = 8
+            self._total_ifd_count_bytetype = "Q"
+            self._total_ifd_count_bytesize = 8
+            self._idf_entry_tag_bytetype = "H"  # 16-bit
+            self._idf_entry_datatype_bytetype = "H"  # 16-bit
+            self._idf_entry_element_count_bytetype = "Q"  # 64-bit for BigTIFF
+            self._idf_entry_tagdata_or_offset_bytetype = "Q"  # 64-bit for BigTIFF
+            self._idf_entry_tagdata_bytesize_before_offset = 8  # More than 8 bytes => use offset
+            self._idf_nbytes_per_entry = 20  # Each BigTIFF IFD tag-entry is described by 20 bytes
+
+            # BigTIFF can use variable-sized ints to specify offsets, defined by bytes 4-5:
+            assert self.file.tell() == 4
+            self._ifd_offsets_bytesize = self.read("H")
+            assert self._ifd_offsets_bytesize == 8  # I think offset sizes are always 64-bit (=8 bytes).
+            self._ifd_offsets_bytetype = self.UNSIGNED_BYTESIZE_TO_TYPE[self._ifd_offsets_bytesize]
+            assert self._ifd_offsets_bytetype == "Q"  # byte-size of 8 is 64-bit int (unsigned long long)
+            # BigTIFF bytes 6-7 should be null:
+            _this_should_be_null = self.read("H")
+            assert _this_should_be_null == 0
+
+            # BigTIFF bytes 8-15 is a 64-bit int specifying offset to first directory:
+            # (OBS: I'm not sure if this is actually *always* 64-bit, or if it can vary
+            #  according to the bytesize specified by bytes 4-5)
+            assert self.file.tell() == 8
+            self.first_ifd_offset = self.read(self._ifd_offsets_bytetype)  # Should
+
+        if verbose:
+            print(" - byte order:", self._tif_byte_order)
+            print(" - tif version tag:", self._tiff_version_tag, f"({self._tiff_version_str} format)")
+
+        # The TIFF file header contains IFDs, each IFDs contain tags/entries.
+        # For instance, the first IFD may contain tag-entries that describe
+        # width (tag=256), height (tag=257), bits-per-sample (tag=258),
+        # and most importantly, one or more tags specifying where to find the image data.
+        # e.g. tag=273 (0x0111) is StripOffsets and specifies the byte offset to for this "strip",
+        # where strip in our case is an image.
+        # Each IFD is a sequence of entries, each entry is 12 bytes (standard)
+        # or 20 bytes (bigtiff) long and describes:
+        # * entry tag (2 bytes)
+        # * entry data type (2 bytes - Standard TIFF defines 14 data types).
+        # * entry element count - the number of elements for this entry
+        #   * entry-element-count is 4 bytes for Standard TIFF ("L")
+        #   * entry-element-count is 8 bytes for BigTIFF ("Q")
+        # * entry-data or entry-data-offset
+        #   * This is 4 bytes in standard tiff and 8 bytes in BigTiff.
+        #   * Whether the data can fit within these 4 or 8 bytes is determined by the number of
+        #   * entry-data is (we use an offset, if data is more than 4 bytes).
+        # After all entries have been listed (so at byte 12*n_entries bytes for standard tiff,
+        # or 20*n_entries bytes for BigTIFF), we write the offset to the next IFD.
+        # If there are no more IDFs, then we write zero/null.
+        # (*) In standard tiff, entry/tag can contain 2*32 elements (e.g. a string with 4 mio. characters):
+        #     In
+
+        # Read info from first IFD (Image File Directory)
         self.file.seek(self.first_ifd_offset)
-        n_entries = self.read("H")
+        n_entries = self.read(self._total_ifd_count_bytetype)  # entries in THIS IFD
+        self.first_idf_tag_entries = []
         for i in range(n_entries):
-            self.file.seek(self.first_ifd_offset + 2 + i * 12)
-            tag = self.read("H")
-            type = self.TIFF_TYPES[self.read("H")]
-            count = self.read("L")
+            entry_offset = (self.first_ifd_offset
+                            + self._total_ifd_count_bytesize
+                            + i * self._idf_nbytes_per_entry)
+            self.file.seek(entry_offset)
+            print(f"Entry #{i} offset:", entry_offset)
+            tag = self.read(self._idf_entry_tag_bytetype)
+            print(f" - tag: {tag}")
+            type = self.TIFF_TYPES[self.read(self._idf_entry_datatype_bytetype)]
+            print(f" - type: {type}")
+            count = self.read(self._idf_entry_element_count_bytetype)
+            print(f" - count: {count}")
+            # value_or_offset = self.read(type, count)
+            print(f"TiffMap init, first IFD, tag/entry #{i}, tag={tag} (type={type} x count={count}):")
+            tag_dict = {'tag': tag, 'data-type': type, 'data-length': count}
+            if count * self.TYPE_SIZES[type] > self._idf_entry_tagdata_bytesize_before_offset:
+                # We don't want to read tag value if we need to seek to a new offset.
+                tag_data_offset = self.read(self._idf_entry_tagdata_or_offset_bytetype)
+                tag_value = 0
+                tag_dict['data-offset'] = tag_data_offset
+                print(" - tag data at offset", tag_data_offset)
+            else:
+                tag_value = self.read(type, count)
+                tag_dict['value'] = tag_value
+                print(" - tag data value", tag_value)
+            self.first_idf_tag_entries.append(tag_dict)
             if tag == 256:
-                self.width = self.read(type, count)
+                self.width = tag_value
             elif tag == 257:
-                self.height = self.read(type, count)
+                self.height = tag_value
             elif tag == 258:
-                bits_per_sample = self.read(type, count)
+                bits_per_sample = tag_value
                 dtype_str = "u" + str(int(bits_per_sample / 8))
                 # Picasso uses internally exclusively little endian byte order
                 self.dtype = _np.dtype(dtype_str)
@@ -202,26 +320,40 @@ class TiffMap:
 
         # Collect image offsets
         self.image_offsets = []
-        offset = self.first_ifd_offset
-        while offset != 0:
-            self.file.seek(offset)
-            n_entries = self.read("H")
+        offset_for_next_idf_offset = self._offset_for_first_ifd_offset
+        next_ifd_offset = self.first_ifd_offset
+        ifd_number = 0
+        print("\nCollecting image offsets...")
+        while next_ifd_offset != 0:
+            print(" - next_idf_offset:", next_ifd_offset)
+            self.file.seek(next_ifd_offset)
+            n_entries = self.read_numbers(self._total_ifd_count_bytetype)
             if n_entries is None:
                 # Some MM files have trailing nonsense bytes
                 break
             for i in range(n_entries):
-                self.file.seek(offset + 2 + i * 12)
-                tag = self.read("H")
+                self.file.seek(next_ifd_offset
+                               + self._total_ifd_count_bytesize
+                               + i * self._idf_nbytes_per_entry)
+                tag = self.read(self._idf_entry_tag_bytetype)
                 if tag == 273:
-                    type = self.TIFF_TYPES[self.read("H")]
-                    count = self.read("L")
-                    self.image_offsets.append(self.read(type, count))
+                    type = self.TIFF_TYPES[self.read(self._idf_entry_datatype_bytetype)]
+                    count = self.read(self._idf_entry_element_count_bytetype)
+                    image_strip_offset = self.read(type, count)
+                    print(f" -- TiffMap init, ifd #{ifd_number} image strip offset = {image_strip_offset} " 
+                          f"(found in tag entry #{i}, tag={tag}, type={type}, count={count})")
+                    self.image_offsets.append(image_strip_offset)
                     break
-            self.file.seek(offset + 2 + n_entries * 12)
-            last_offset = offset + 2 + n_entries * 12
-            offset = self.read("L")
+
+            offset_for_next_idf_offset = (
+                    next_ifd_offset + self._total_ifd_count_bytesize + n_entries * self._idf_nbytes_per_entry)
+            self.file.seek(offset_for_next_idf_offset)
+            next_ifd_offset = self.read(self._ifd_offsets_bytetype)
+            ifd_number += 1
+
+        print(" - Finished collecting image offsets:", self.image_offsets)
         self.n_frames = len(self.image_offsets)
-        self.last_ifd_offset = last_offset
+        self.last_ifd_offset = offset_for_next_idf_offset
         self.lock = _threading.Lock()
 
     def __enter__(self):
@@ -285,18 +417,29 @@ class TiffMap:
         }
         # The following block is MM-specific
         self.file.seek(self.first_ifd_offset)
+        tag_entries = []
         n_entries = self.read("H")
         for i in range(n_entries):
-            self.file.seek(self.first_ifd_offset + 2 + i * 12)
-            tag = self.read("H")
-            type = self.TIFF_TYPES[self.read("H")]
-            count = self.read("L")
-            if count * self.TYPE_SIZES[type] > 4:
-                self.file.seek(self.read("L"))
+            self.file.seek(self.first_ifd_offset
+                           + self._total_ifd_count_bytesize
+                           + i * self._idf_nbytes_per_entry)
+            tag = self.read(self._idf_entry_tag_bytetype)
+            type = self.TIFF_TYPES[self.read(self._idf_entry_datatype_bytetype)]
+            count = self.read(self._idf_entry_element_count_bytetype)
+            if count * self.TYPE_SIZES[type] > self._idf_entry_tagdata_bytesize_before_offset:
+                entry_data_offset = self.read(self._idf_entry_tagdata_or_offset_bytetype)
+                self.file.seek(entry_data_offset)
+                entry_value = self.read(type, count)
+            else:
+                entry_data_offset = 0
+                entry_value = self.read(type, count)
+            tag_entries.append({'tag': tag, 'data-type': type, 'data-length': count,
+                                'data-offset': entry_data_offset, 'value': entry_value})
+            print(f"info() Entry {i}, tag={tag}, type={type}, count={count}.")
             if tag == 51123:
                 # This is the Micro-Manager tag
                 # We generate an info dict that contains any info we need.
-                readout = self.read(type, count).strip(
+                readout = entry_value.strip(
                     b"\0"
                 )  # Strip null bytes which MM 1.4.22 adds
                 mm_info_raw = _json.loads(readout.decode())
@@ -370,6 +513,7 @@ class TiffMap:
         try:
             return _struct.unpack(fmt, self.file.read(count * size))[0]
         except _struct.error:
+            print("_struct.error encountered; returning None.")
             return None
 
     def close(self):
