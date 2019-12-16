@@ -325,7 +325,9 @@ class TiffMap:
         ifd_number = 0
         print("\nCollecting image offsets...")
         while next_ifd_offset != 0:
-            print(" - next_idf_offset:", next_ifd_offset)
+            if ifd_number % 10 == 0:
+                print(".", end="")
+                # print(" - next_idf_offset:", next_ifd_offset)
             self.file.seek(next_ifd_offset)
             n_entries = self.read_numbers(self._total_ifd_count_bytetype)
             if n_entries is None:
@@ -340,8 +342,10 @@ class TiffMap:
                     type = self.TIFF_TYPES[self.read(self._idf_entry_datatype_bytetype)]
                     count = self.read(self._idf_entry_element_count_bytetype)
                     image_strip_offset = self.read(type, count)
-                    print(f" -- TiffMap init, ifd #{ifd_number} image strip offset = {image_strip_offset} " 
-                          f"(found in tag entry #{i}, tag={tag}, type={type}, count={count})")
+                    if ifd_number % 10 == 0:
+                        print(",", end="")
+                        # print(f" -- TiffMap init, ifd #{ifd_number} image strip offset = {image_strip_offset} "
+                        #       f"(found in tag entry #{i}, tag={tag}, type={type}, count={count})")
                     self.image_offsets.append(image_strip_offset)
                     break
 
