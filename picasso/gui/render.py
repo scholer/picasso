@@ -47,6 +47,7 @@ INITIAL_REL_MAXIMUM = 0.5
 ZOOM = 10 / 7
 N_GROUP_COLORS = 8
 N_Z_COLORS = 32
+DATETIME_STR_FMT = "%y%m%d_%H%M%S"
 
 matplotlib.rcParams.update({"axes.titlesize": "large"})
 
@@ -2355,6 +2356,7 @@ class View(QtWidgets.QLabel):
         return len(l) == len(setl) and setl == set(range(min(l), max(l) + 1))
 
     def add(self, path, render=True):
+        """ Add/load localizations dataset from file. """
         try:
             locs, info = io.load_locs(path, qt_parent=self)
         except io.NoMetadataFileError:
@@ -2378,7 +2380,12 @@ class View(QtWidgets.QLabel):
         # Try to load a driftfile:
         if "Last driftfile" in info[-1]:
             driftpath = info[-1]["Last driftfile"]
+            # OBS: If the last entry in the info file has a "Last driftfile" record,
+            # this is the drift that was applied to the original locs data before
+            # re-saving the locs to a new file. It is loaded here in order to "undo"
+            # the drift (to get the original x,y locs), but should not be re-applied.
             if driftpath is not None:
+                print("Loading last drift file:", driftpath)
                 try:
                     with open(driftpath, "r") as f:
                         drifttxt = np.loadtxt(f)
@@ -3145,7 +3152,7 @@ class View(QtWidgets.QLabel):
     def load_picks(self, path):
         """ Loads picks from yaml file. """
         with open(path, "r") as f:
-            regions = yaml.load(f)
+            regions = yaml.safe_load(f)
 
         # Backwards compatibility for old picked region files
         if "Shape" in regions:
@@ -3183,7 +3190,7 @@ class View(QtWidgets.QLabel):
             )
         oldpicks = self._picks.copy()
         with open(path, "r") as f:
-            regions = yaml.load(f)
+            regions = yaml.safe_load(f)
             self._picks = regions["Centers"]
             diameter = regions["Diameter"]
 
@@ -4889,7 +4896,13 @@ class View(QtWidgets.QLabel):
         ]
         io.save_datasets(path, info, groups=pick_props)
 
-    def save_picks(self, path):
+    def save_picks(self, path=None, channel=None):
+        if path is None:
+            if channel is None:
+                channel = self.get_channel("Select channel to save picks for.")
+            base, ext = os.path.splitext(self.locs_paths[channel])
+            timestr = time.strftime(DATETIME_STR_FMT)
+            path = f"{base}_{timestr}_picks.yaml"
         if self._pick_shape == "Circle":
             d = self.window.tools_settings_dialog.pick_diameter.value()
             picks = {
@@ -5342,6 +5355,7 @@ class View(QtWidgets.QLabel):
         # Cleanup
         self.index_blocks[channel] = None
         self.add_drift(channel, drift)
+        self.save_picks(channel=channel)
         status.close()
         self.update_scene()
 
@@ -5367,6 +5381,7 @@ class View(QtWidgets.QLabel):
         # Cleanup
         self.index_blocks[channel] = None
         self.add_drift(channel, drift)
+        self.save_picks(channel=channel)
         status.close()
         self.update_scene()
 
@@ -5399,6 +5414,7 @@ class View(QtWidgets.QLabel):
         driftfile = base + "_" + timestr + "_drift.txt"
         self._driftfiles[channel] = driftfile
 
+        print(f"Updating drift for channel {channel} ...")
         if self._drift[channel] is None:
             self._drift[channel] = drift
         else:
@@ -5414,21 +5430,61 @@ class View(QtWidgets.QLabel):
                     )
 
         self.currentdrift[channel] = copy.copy(drift)
+        print(f"Saving updated drift for channel {channel} to file: {driftfile}")
+        self.save_drift(drift=self._drift[channel], path=driftfile)
 
+    def save_drift(self, drift, path=None):
         if hasattr(drift, "z"):
             np.savetxt(
-                driftfile,
-                self._drift[channel],
+                path,
+                drift,
                 header="dx\tdy\tdz",
                 newline="\r\n",
             )
         else:
             np.savetxt(
-                driftfile,
-                self._drift[channel],
+                path,
+                drift,
                 header="dx\tdy",
                 newline="\r\n",
             )
+
+    def load_drift(self, path, channel=None, render=True):
+        """ Load drift from file and apply to locs in the given channel. """
+
+        if channel is None:
+            channel = self.get_channel("Select channel to apply loaded drift to")
+        print(f"Loading and applying drift for channel {channel} from file: {path}")
+
+        with open(path, "r") as f:
+            drifttxt = np.loadtxt(f)
+        drift_x = drifttxt[:, 0]
+        drift_y = drifttxt[:, 1]
+
+        if drifttxt.shape[1] == 3:
+            drift_z = drifttxt[:, 2]
+            drift = (drift_x, drift_y, drift_z)
+            drift = np.rec.array(
+                drift, dtype=[("x", "f"), ("y", "f"), ("z", "f")]
+            )
+        else:
+            drift = (drift_x, drift_y)
+            drift = np.rec.array(
+                drift, dtype=[("x", "f"), ("y", "f")]
+            )
+
+        # Apply drift
+        self.locs[channel].x -= drift_x[self.locs[channel].frame]
+        self.locs[channel].y -= drift_y[self.locs[channel].frame]
+        if hasattr(drift, 'z'):
+            self.locs[channel].z -= drift.z[self.locs[channel].frame]
+
+        self._drift[channel] = drift
+        self._driftfiles[channel] = path
+        self.currentdrift[channel] = copy.copy(drift)
+        if render:
+            self.update_scene()
+
 
     def unfold_groups(self):
         if not hasattr(self, "unfold_status"):
@@ -5774,6 +5830,8 @@ class Window(QtWidgets.QMainWindow):
         save_picks_action.triggered.connect(self.save_picks)
         load_picks_action = file_menu.addAction("Load pick regions")
         load_picks_action.triggered.connect(self.load_picks)
+        load_drift_action = file_menu.addAction("Load drift file")
+        load_drift_action.triggered.connect(self.load_drift)
         file_menu.addSeparator()
         export_current_action = file_menu.addAction("Export current view")
         export_current_action.setShortcut("Ctrl+E")
@@ -6589,6 +6647,13 @@ class Window(QtWidgets.QMainWindow):
             )
             if path:
                 self.view.substract_picks(path)
+
+    def load_drift(self):
+        path, ext = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load drift", filter="*.txt"
+        )
+        if path:
+            self.view.load_drift(path)
 
     def load_user_settings(self):
         settings = io.load_user_settings()
